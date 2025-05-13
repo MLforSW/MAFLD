@@ -1,0 +1,515 @@
+from __future__ import annotations
+
+import torch
+
+from sklearn.datasets import load_iris
+from sklearn.metrics import log_loss
+from sklearn.model_selection import train_test_split
+from tabpfn import TabPFNClassifier
+import os
+import sys
+import pandas as pd
+import os
+import sys
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    roc_auc_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    confusion_matrix,
+)
+
+
+
+project_path = os.path.abspath(os.path.join(os.getcwd(), ".."))
+
+# 切换工作目录并加入系统路径
+os.chdir(project_path)
+sys.path.append(project_path)
+from tabpfn import TabPFNClassifier
+from finetuning_scripts.finetune_tabpfn_main import fine_tune_tabpfn
+excel_path = os.path.join(project_path, "examples", "Whole.xlsx")
+df = pd.read_excel(excel_path)
+
+# 如果你在 finetune_tabpfn_v2-master/examples 目录下运行 Notebook：
+project_path = os.path.abspath(os.path.join(os.getcwd(), ".."))
+
+# 切换工作目录并加入系统路径
+os.chdir(project_path)
+sys.path.append(project_path)
+
+from tabpfn import TabPFNClassifier
+from finetuning_scripts.finetune_tabpfn_main import fine_tune_tabpfn
+excel_path = os.path.join(project_path, "examples", "Whole.xlsx")
+df = pd.read_excel("/root/Untitled Folder/examples/Whole.xlsx")
+import numpy as np
+import pandas as pd
+import torch
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, precision_score, recall_score, confusion_matrix
+from sklearn.ensemble import RandomForestClassifier
+from tabpfn import TabPFNClassifier
+
+# 加载数据
+df = pd.read_excel("/root/Untitled Folder/examples/Whole.xlsx")
+X = df.drop(columns=["MAFLD"])
+y = df["MAFLD"]
+
+# 基础模型路径
+base_model_path = "/root/Untitled Folder/examples/tabpfn/tabpfn-v2-classifier.ckpt"
+
+# 初始化交叉验证
+n_splits = 5
+skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+# 存储各折评估结果
+metrics_ft = {'accuracy': [], 'auc': [], 'f1': [], 'precision': [], 'recall': []}
+metrics_rf = {'accuracy': [], 'auc': [], 'f1': [], 'precision': [], 'recall': []}
+metrics_def = {'accuracy': [], 'auc': [], 'f1': [], 'precision': [], 'recall': []}
+
+for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
+    print(f"\n=== Processing Fold {fold+1}/{n_splits} ===")
+    
+    X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+    y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+    
+    # ✅ 微调模型（每个折独立保存）
+    save_path = f"./fine_tuned_model_fold{fold}.ckpt"  # 避免路径冲突
+    
+    fine_tune_tabpfn(
+        path_to_base_model=base_model_path,
+        save_path_to_fine_tuned_model=save_path,
+        time_limit=100000,
+        finetuning_config={"learning_rate": 0.0001, "batch_size": 12},  # 减小batch_size防CUDA错误
+        validation_metric="roc_auc",
+        X_train=X_train,
+        y_train=y_train,
+        categorical_features_index=None,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        task_type="binary",
+        show_training_curve=False,
+        logger_level=0,
+        use_wandb=False,
+    )
+    
+    # ✅ 加载微调模型预测
+    clf_ft = TabPFNClassifier(model_path=save_path).fit(X_train, y_train)
+    y_proba_ft = clf_ft.predict_proba(X_val)[:, 1]
+    y_pred_ft = (y_proba_ft >= 0.5).astype(int)
+    
+    # 记录微调模型指标
+    metrics_ft['accuracy'].append(accuracy_score(y_val, y_pred_ft))
+    metrics_ft['auc'].append(roc_auc_score(y_val, y_proba_ft))
+    metrics_ft['f1'].append(f1_score(y_val, y_pred_ft))
+    metrics_ft['precision'].append(precision_score(y_val, y_pred_ft))
+    metrics_ft['recall'].append(recall_score(y_val, y_pred_ft))
+    
+    # ✅ 训练随机森林后处理
+    X_rf_train = clf_ft.predict_proba(X_train)
+    rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+    rf_model.fit(X_rf_train, y_train)
+    
+    X_rf_val = clf_ft.predict_proba(X_val)
+    y_proba_rf = rf_model.predict_proba(X_rf_val)[:, 1]
+    y_pred_rf = (y_proba_rf >= 0.5).astype(int)
+    
+    # 记录RF指标
+    metrics_rf['accuracy'].append(accuracy_score(y_val, y_pred_rf))
+    metrics_rf['auc'].append(roc_auc_score(y_val, y_proba_rf))
+    metrics_rf['f1'].append(f1_score(y_val, y_pred_rf))
+    metrics_rf['precision'].append(precision_score(y_val, y_pred_rf))
+    metrics_rf['recall'].append(recall_score(y_val, y_pred_rf))
+    
+    # ✅ 评估默认模型（未微调）
+    clf_def = TabPFNClassifier(model_path=base_model_path).fit(X_train, y_train)
+    y_proba_def = clf_def.predict_proba(X_val)[:, 1]
+    y_pred_def = (y_proba_def >= 0.5).astype(int)
+    
+    # 记录默认模型指标
+    metrics_def['accuracy'].append(accuracy_score(y_val, y_pred_def))
+    metrics_def['auc'].append(roc_auc_score(y_val, y_proba_def))
+    metrics_def['f1'].append(f1_score(y_val, y_pred_def))
+    metrics_def['precision'].append(precision_score(y_val, y_pred_def))
+    metrics_def['recall'].append(recall_score(y_val, y_pred_def))
+    
+    # 清理GPU缓存防止内存泄漏
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+# ✅ 输出交叉验证平均结果
+def print_metrics(metrics, name):
+    print(f"\n=== {name} 5-Fold CV Results ===")
+    print(f"Accuracy: {np.mean(metrics['accuracy']):.4f} ± {np.std(metrics['accuracy']):.4f}")
+    print(f"AUC:      {np.mean(metrics['auc']):.4f} ± {np.std(metrics['auc']):.4f}")
+    print(f"F1:       {np.mean(metrics['f1']):.4f} ± {np.std(metrics['f1']):.4f}")
+    print(f"Precision:{np.mean(metrics['precision']):.4f} ± {np.std(metrics['precision']):.4f}")
+    print(f"Recall:   {np.mean(metrics['recall']):.4f} ± {np.std(metrics['recall']):.4f}")
+
+print_metrics(metrics_ft, "Fine-tuned TabPFN")
+print_metrics(metrics_rf, "Random Forest on TabPFN")
+print_metrics(metrics_def, "Default TabPFN")
+
+#Whole
+df = pd.read_excel("/root/Untitled Folder/examples/Whole.xlsx")
+X = df.drop(columns=["MAFLD"])
+y = df["MAFLD"]
+from sklearn.utils import resample
+
+# 拆分训练集和测试集
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+X_train_aug = pd.concat([X_train, X_train.sample(frac=0.1, random_state=42)])
+y_train_aug = pd.concat([y_train, y_train.sample(frac=0.1, random_state=42)])
+# 基础模型路径
+base_model_path = "/root/Untitled Folder/examples/tabpfn/tabpfn-v2-classifier.ckpt"
+# Fine-tuned 模型保存路径
+save_path_to_fine_tuned_model = "./fine_tuned_model.ckpt"
+
+# ✅ 微调模型
+fine_tune_tabpfn(
+    path_to_base_model=base_model_path,
+    save_path_to_fine_tuned_model=save_path_to_fine_tuned_model,
+    time_limit=100000,
+    finetuning_config={"learning_rate": 0.0001, "batch_size": 8 }, 
+    validation_metric="roc_auc",
+    X_train=X_train_aug,
+    y_train=y_train_aug,
+    categorical_features_index=None,
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    task_type="binary",
+    show_training_curve=True,
+    logger_level=0,
+    use_wandb=False,
+)
+
+# ✅ 加载 Fine-tuned 模型并预测
+clf = TabPFNClassifier(model_path=save_path_to_fine_tuned_model).fit(X_train_aug, y_train_aug)
+y_pred = clf.predict(X_test)
+y_proba = clf.predict_proba(X_test)[:, 1]
+
+print("== Finetuned TabPFN ==")
+print("Accuracy:", accuracy_score(y_test, y_pred))
+print("AUC:", roc_auc_score(y_test, y_proba))
+print("F1 Score:", f1_score(y_test, y_pred))
+print("Precision:", precision_score(y_test, y_pred))
+print("Recall:", recall_score(y_test, y_pred))
+print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
+
+# ✅ 训练 XGBoost 作为 TabPFN 输出的后处理（替换RF）
+from xgboost import XGBClassifier
+
+# 使用 TabPFN 输出的概率作为特征（可选项：是否拼接原始特征）
+use_raw_features = True  # 控制是否组合原始特征
+
+if use_raw_features:
+    # 组合原始特征 + TabPFN概率（适合特征重要性分析）
+    X_xgb_train = np.hstack([X_train.values, clf_ft.predict_proba(X_train)])
+    X_xgb_test = np.hstack([X_test.values, clf_ft.predict_proba(X_test)])
+else:
+    # 仅使用TabPFN概率（适合轻量化部署）
+    X_xgb_train = clf_ft.predict_proba(X_train)
+    X_xgb_test = clf_ft.predict_proba(X_test)
+
+# 配置优化后的XGBoost参数
+xgb_model = XGBClassifier(
+    n_estimators=300,                # 增加树的数量
+    learning_rate=0.03,              # 更精细的学习率
+    max_depth=4,                     # 适当增加深度
+    subsample=0.9,                   # 提高子采样比例
+    colsample_bytree=0.7,            # 列采样比例
+    objective='binary:logistic',     # 显式指定二分类目标
+    eval_metric='logloss',           # 与微调任务一致的评估指标
+    use_label_encoder=False,         # 消除警告
+    tree_method='gpu_hist' if torch.cuda.is_available() else 'auto'  # GPU加速
+)
+
+xgb_model.fit(X_xgb_train, y_train)
+
+# 预测时需要保持特征一致性
+if use_raw_features:
+    X_xgb_test = np.hstack([X_test.values, clf_ft.predict_proba(X_test)])
+else:
+    X_xgb_test = clf_ft.predict_proba(X_test)
+
+y_pred_xgb = xgb_model.predict(X_xgb_test)
+y_proba_xgb = xgb_model.predict_proba(X_xgb_test)[:, 1]  # 获取正类概率
+
+print("\n== XGBoost on Finetuned TabPFN Output ==")
+print("Accuracy:", accuracy_score(y_test, y_pred_xgb))
+print("AUC:", roc_auc_score(y_test, y_proba_xgb))
+print("F1 Score:", f1_score(y_test, y_pred_xgb))
+print("Precision:", precision_score(y_test, y_pred_xgb))
+print("Recall:", recall_score(y_test, y_pred_xgb))
+print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred_xgb))
+# ✅ 对比默认模型（未微调）
+clf_default = TabPFNClassifier(model_path=base_model_path).fit(X_train, y_train)
+y_pred_def = clf_default.predict(X_test)
+y_proba_def = clf_default.predict_proba(X_test)[:, 1]
+
+print("\n== Default TabPFN ==")
+print("Accuracy:", accuracy_score(y_test, y_pred_def))
+print("AUC:", roc_auc_score(y_test, y_proba_def))
+print("F1 Score:", f1_score(y_test, y_pred_def))
+print("Precision:", precision_score(y_test, y_pred_def))
+print("Recall:", recall_score(y_test, y_pred_def))
+print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred_def))
+
+# 获取XGBoost叶节点嵌入
+X_leaf_embedding = xgb_model.apply(X_xgb_test)  # shape: (n_samples, n_estimators)
+
+print("Leaf embedding shape:", X_leaf_embedding.shape)
+
+import numpy as np
+import pandas as pd
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# PCA降维（先降至20维，便于t-SNE加速处理）
+pca = PCA(n_components=20, random_state=42)
+X_pca = pca.fit_transform(X_leaf_embedding)
+
+# t-SNE降维至2维
+tsne = TSNE(n_components=2, random_state=42, perplexity=30, learning_rate=200, init='pca')
+X_tsne = tsne.fit_transform(X_pca)
+
+# 准备绘图数据
+df_plot = pd.DataFrame({
+    'TSNE1': X_tsne[:, 0],
+    'TSNE2': X_tsne[:, 1],
+    'TrueLabel': y_test.values,
+    'PredLabel': y_pred_xgb
+})
+
+# 可视化t-SNE结果
+plt.figure(figsize=(10, 6))
+sns.scatterplot(data=df_plot, x='TSNE1', y='TSNE2', hue='TrueLabel', style='PredLabel', palette='viridis')
+plt.title('t-SNE Visualization of XGBoost Leaf Embeddings')
+plt.legend(title='True/Pred Label', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+import shap
+
+# 根据特征组合方式构建解释数据
+feature_names = list(X_train.columns) + ['TabPFN_Prob_Class0', 'TabPFN_Prob_Class1'] if use_raw_features else ['TabPFN_Prob_Class0', 'TabPFN_Prob_Class1']
+
+# 使用训练集构建背景数据
+explainer = shap.TreeExplainer(xgb_model)
+shap_values = explainer.shap_values(X_xgb_test)
+
+
+shap.summary_plot(shap_values, X_xgb_test, feature_names=feature_names)
+
+
+
+import shap
+import numpy as np
+import matplotlib.pyplot as plt
+from xgboost import XGBClassifier
+
+# === Step 1: 定义 pipeline 函数 ===
+# 输入原始特征，输出最终的类别概率（由 TabPFN + XGBoost 联合完成）
+def pipeline_from_raw(X_raw_numpy):
+    # TabPFN 输出概率
+    tabpfn_probs = clf_ft.predict_proba(X_raw_numpy)
+    
+    # 是否将原始特征也输入 XGBoost
+    if use_raw_features:
+        X_combined = np.hstack([X_raw_numpy, tabpfn_probs])
+    else:
+        X_combined = tabpfn_probs
+        
+    return xgb_model.predict_proba(X_combined)
+
+# === Step 2: 训练 XGBoost 模型 ===
+use_raw_features = True  # 是否使用原始特征 + TabPFN 概率组合
+if use_raw_features:
+    X_xgb_train = np.hstack([X_train.values, clf_ft.predict_proba(X_train)])
+else:
+    X_xgb_train = clf_ft.predict_proba(X_train)
+
+xgb_model = XGBClassifier(
+    n_estimators=300,
+    learning_rate=0.03,
+    max_depth=4,
+    subsample=0.9,
+    colsample_bytree=0.7,
+    objective='binary:logistic',
+    eval_metric='logloss',
+    use_label_encoder=False,
+    tree_method='gpu_hist' if torch.cuda.is_available() else 'auto'
+)
+xgb_model.fit(X_xgb_train, y_train)
+
+# === Step 3: 构建 SHAP Explainer（解释原始特征对最终分类影响）===
+explainer = shap.KernelExplainer(
+    model=pipeline_from_raw,
+    data=X_train.values[:100]  # 取前100个样本作为背景数据
+)
+
+# === Step 4: 选择部分测试样本进行解释 ===
+X_sample = X_test.values[:100]  # 选取10个样本做 SHAP 分析
+shap_values = explainer.shap_values(X_sample)  # 返回为 [负类, 正类] 两组 SHAP 值
+
+# === Step 5: 显示 SHAP 解释图 ===
+print("SHAP shape:", np.shape(shap_values))
+print("X_sample shape:", X_sample.shape)
+# 提取正类（class 1）的 SHAP 值
+shap_values_positive_class = shap_values[:, :, 1]
+# 显示 SHAP summary 图（注意 X_sample.values 和列名）
+shap.summary_plot(shap_values_positive_class, X_sample, feature_names=X_test.columns.tolist())
+plt.tight_layout()
+plt.show()
+
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.utils.validation import check_is_fitted
+import numpy as np
+
+class WrapperModel(BaseEstimator, ClassifierMixin):
+    def __init__(self, tabpfn_model, xgb_model, use_raw_features=True):
+        self.tabpfn_model = tabpfn_model
+        self.xgb_model = xgb_model
+        self.use_raw_features = use_raw_features
+
+    def fit(self, X, y):
+        self.X_train_ = X
+        self.y_train_ = y
+        self.classes_ = np.unique(y)
+        self.is_fitted_ = True
+        return self
+
+    def predict(self, X):
+        check_is_fitted(self, "is_fitted_")
+        tabpfn_probs = self.tabpfn_model.predict_proba(X)
+        if self.use_raw_features:
+            X_combined = np.hstack([X, tabpfn_probs])
+        else:
+            X_combined = tabpfn_probs
+        return self.xgb_model.predict(X_combined)
+
+    def predict_proba(self, X):
+        check_is_fitted(self, "is_fitted_")
+        tabpfn_probs = self.tabpfn_model.predict_proba(X)
+        if self.use_raw_features:
+            X_combined = np.hstack([X, tabpfn_probs])
+        else:
+            X_combined = tabpfn_probs
+        return self.xgb_model.predict_proba(X_combined)
+
+    @property
+    def _estimator_type(self):
+        return "classifier"
+
+import matplotlib.pyplot as plt
+
+def plot_2d_pdp(estimator, X, feature_names, f1_name, f2_name, grid_resolution=20):
+    f1_idx = feature_names.index(f1_name)
+    f2_idx = feature_names.index(f2_name)
+
+    x1_range = np.linspace(X[:, f1_idx].min(), X[:, f1_idx].max(), grid_resolution)
+    x2_range = np.linspace(X[:, f2_idx].min(), X[:, f2_idx].max(), grid_resolution)
+
+    avg_preds = np.zeros((grid_resolution, grid_resolution))
+
+    for i, x1 in enumerate(x1_range):
+        for j, x2 in enumerate(x2_range):
+            X_temp = X.copy()
+            X_temp[:, f1_idx] = x1
+            X_temp[:, f2_idx] = x2
+            probs = estimator.predict_proba(X_temp)
+            avg_preds[j, i] = probs[:, 1].mean()  # 预测为正类的概率平均值
+
+    X1_grid, X2_grid = np.meshgrid(x1_range, x2_range)
+
+    plt.figure(figsize=(8, 6))
+    contour = plt.contourf(X1_grid, X2_grid, avg_preds, cmap="viridis", levels=20)
+    plt.colorbar(contour)
+    plt.xlabel(f1_name)
+    plt.ylabel(f2_name)
+    plt.title(f'2D PDP: {f1_name} × {f2_name}')
+    plt.tight_layout()
+    plt.savefig(f'pdp_manual_{f1_name}_{f2_name}.png', dpi=300)
+    plt.close()
+    plt.show()
+
+
+model = WrapperModel(tabpfn_model=clf_ft, xgb_model=xgb_model, use_raw_features=True)
+model.fit(X_train.values, y_train)
+
+
+important_features = ['Waist', 'BMI', 'GGT', 'SCR']
+X_columns = X_train.columns.tolist()
+feature_pairs = [(X_columns.index(f1), X_columns.index(f2))
+                 for i, f1 in enumerate(important_features)
+                 for j, f2 in enumerate(important_features) if j > i]
+
+# 循环绘图
+X_np = X_train.values  # DataFrame 转换为 numpy array
+for (f1_idx, f2_idx) in feature_pairs:
+    f1_name = X_columns[f1_idx]
+    f2_name = X_columns[f2_idx]
+    print(f"绘制手动 PDP 图：{f1_name} × {f2_name}")
+    plot_2d_pdp(model, X_np, X_columns, f1_name, f2_name)
+
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+print("当前目录：", os.getcwd())
+
+def plot_2d_pdp(estimator, X, feature_names, f1_name, f2_name, grid_resolution=20):
+    f1_idx = feature_names.index(f1_name)
+    f2_idx = feature_names.index(f2_name)
+
+    x1_range = np.linspace(X[:, f1_idx].min(), X[:, f1_idx].max(), grid_resolution)
+    x2_range = np.linspace(X[:, f2_idx].min(), X[:, f2_idx].max(), grid_resolution)
+
+    avg_preds = np.zeros((grid_resolution, grid_resolution))
+
+    for i, x1 in enumerate(x1_range):
+        for j, x2 in enumerate(x2_range):
+            X_temp = X.copy()  
+            X_temp[:, f1_idx] = x1
+            X_temp[:, f2_idx] = x2
+            probs = estimator.predict_proba(X_temp)
+            avg_preds[i, j] = probs[:, 1].mean() 
+
+    X1_grid, X2_grid = np.meshgrid(x1_range, x2_range)
+
+    plt.figure(figsize=(8, 6))  
+    contour = plt.contourf(X1_grid, X2_grid, avg_preds, cmap='viridis', levels=20)  
+    plt.colorbar(contour)
+    plt.xlabel(f1_name)
+    plt.ylabel(f2_name)
+    plt.title(f'2D PDP: {f1_name} × {f2_name}')  
+    plt.tight_layout() 
+    plt.savefig(f'pdp_manual_{f1_name}_{f2_name}.png', dpi=300)  
+    plt.show() 
+
+
+model = WrapperModel(tabpfn_model=clf_ft, xgb_model=xgb_model, use_raw_features=True)
+model.fit(X_train.values, X_train)
+
+# 指定特征和生成特征对
+important_features = {'Waist', 'BMI', 'GGT', 'SCR'}
+X_columns = X_train.columns.tolist()
+feature_pairs = [
+    (X_columns.index(f1), X_columns.index(f2))
+    for i, f1 in enumerate(important_features)
+    for j, f2 in enumerate(important_features) if j > i
+]
+
+# 生成并保存图像
+X_np = X_train.values
+for (f1_idx, f2_idx) in feature_pairs:
+    f1_name = X_columns[f1_idx]
+    f2_name = X_columns[f2_idx]
+    print(f"生成 PDP 图: {f1_name} × {f2_name}") 
+    plot_2d_pdp(model, X_np, X_columns, f1_name, f2_name)
+
+
